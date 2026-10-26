@@ -190,10 +190,10 @@ std::uint8_t read_steering(const SteeringConfig &config, std::int16_t raw);
 double normalize_pedal_axis(PedalAxisMode mode, std::int16_t raw);
 std::uint8_t read_pedal(const PedalConfig &config, std::int16_t raw_axis, bool digital_pressed = false);
 
-// Evaluates whether a device matches auto-detection as a primary racing wheel when device_guid is empty.
 // Exact wheelbase models identified by USB vendor + product ID (currently Moza R3/R5/R9/R12/R16/R21).
 bool is_known_wheelbase_model(std::uint16_t vid, std::uint16_t pid);
 
+// Evaluates whether a device matches auto-detection as a primary racing wheel when device_guid is empty.
 bool is_candidate_wheel_device(bool sdl_is_wheel_type, bool sdl_is_gamepad, std::string_view device_name,
                                 std::string_view guid = "");
 
