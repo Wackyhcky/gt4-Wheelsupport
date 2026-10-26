@@ -191,6 +191,9 @@ double normalize_pedal_axis(PedalAxisMode mode, std::int16_t raw);
 std::uint8_t read_pedal(const PedalConfig &config, std::int16_t raw_axis, bool digital_pressed = false);
 
 // Evaluates whether a device matches auto-detection as a primary racing wheel when device_guid is empty.
+// Exact wheelbase models identified by USB vendor + product ID (currently Moza R3/R5/R9/R12/R16/R21).
+bool is_known_wheelbase_model(std::uint16_t vid, std::uint16_t pid);
+
 bool is_candidate_wheel_device(bool sdl_is_wheel_type, bool sdl_is_gamepad, std::string_view device_name,
                                 std::string_view guid = "");
 
@@ -215,6 +218,8 @@ struct WheelFfbCommand {
   float normalized_strength = 0.0f; // 0.0..1.0 for SDL_PlayHapticRumble
   int autocenter_percent = 0;       // 0..100 for SDL_SetHapticAutocenter
   int gain_percent = 0;           // 0..100 for SDL_SetHapticGain
+  int spring_percent = 0;         // 0..100 SDL_HAPTIC_SPRING coefficient (scaled by the device gain)
+  int damper_percent = 0;         // 0..100 SDL_HAPTIC_DAMPER coefficient (scaled by the device gain)
 };
 WheelFfbCommand compute_ffb_command(const FfbConfig &config, std::uint16_t ps2_rumble);
 
@@ -226,6 +231,9 @@ struct HapticOutput {
   std::function<void()> stop_rumble;
   std::function<void(float)> rumble;
   std::function<void(std::uint16_t, std::uint16_t)> joystick_rumble;
+  // Runs spring and damper condition effects (0 stops them). Returns true when a native spring is
+  // running, in which case driver autocenter is left off.
+  std::function<bool(int, int)> conditions;
 };
 void stop_haptic_output(const HapticOutput &output);
 
@@ -272,6 +280,7 @@ private:
   void open_haptic_for_primary(SDL_Joystick *joystick);
   void close_haptic();
   HapticOutput haptic_output();
+  bool run_condition_effect(std::uint16_t type, int &effect_id, int percent);
 
   WheelConfig config_;
   HapticOutput output_override_;
@@ -290,6 +299,9 @@ private:
   std::vector<OpenDevice> devices_;
   SDL_Joystick *primary_joystick_ = nullptr;
   SDL_Haptic *primary_haptic_ = nullptr;
+  std::uint32_t haptic_features_ = 0;
+  int spring_effect_ = -1;
+  int damper_effect_ = -1;
 };
 
 } // namespace gt4::wheel

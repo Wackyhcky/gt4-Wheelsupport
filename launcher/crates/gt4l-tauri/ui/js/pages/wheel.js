@@ -2577,7 +2577,17 @@
 
       );
 
-      ffbBox.appendChild(h("p", {class:"note", text:"Feedback uses gamepad rumble and a fixed centering spring. Damper and force inversion are reserved settings and are not active."}));
+      ffbBox.appendChild(
+
+        makeSliderRow("Damper", 0, 100, 5, Math.round((typeof ffb.damper === "number" ? ffb.damper : 0.15) * 100), "%", function (v) {
+
+          updateSetting("ffb.damper", v / 100);
+
+        })
+
+      );
+
+      ffbBox.appendChild(h("p", {class:"note", text:"Feedback uses gamepad rumble plus a centering spring and damper. Wheels with native spring/damper effects (Moza, Fanatec and other direct-drive bases) use them proportionally; others fall back to the driver's autocenter and ignore the damper. Force inversion is a reserved setting and is not active."}));
     }
     function paintButtonList() {
       var cfg = state.config;

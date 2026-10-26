@@ -224,6 +224,18 @@ void test_opt_in_and_device_identity() {
   }
   require(is_candidate_wheel_device(false, true, "HORI Racing Wheel Apex"), "named XInput wheel recognized");
   require(is_candidate_wheel_device(true, false, "Unknown USB Device"), "SDL wheel type recognized");
+  // Moza bases report names such as "MOZA R9 Base"; SDL 3.4 types only the original firmware IDs as wheels.
+  require(is_candidate_wheel_device(false, false, "MOZA R9 Base", "030000006e3400001200000000000000"),
+          "Moza R9 (newer firmware ID) recognized by exact USB model");
+  require(is_candidate_wheel_device(false, false, "MOZA R5 Base", "030000006e3400000400000000000000"),
+          "Moza R5 recognized by exact USB model");
+  require(!is_candidate_wheel_device(false, false, "MOZA SR-P Pedals", "030000006e3400000300000000000000"),
+          "Moza vendor alone (non-wheelbase product) does not establish wheel identity");
+  require(!is_candidate_wheel_device(false, false, "Pico device", "03000000091200000200000000000000"),
+          "pid.codes vendor 0x1209 is not Moza");
+  require(is_known_wheelbase_model(0x346E, 0x0000) && is_known_wheelbase_model(0x346E, 0x0016) &&
+          !is_known_wheelbase_model(0x346E, 0x0001) && !is_known_wheelbase_model(0x1209, 0x0002),
+          "Moza wheelbase model table");
   DeviceReading unknown{};
   unknown.guid = "11111111111111111111111111111111";
   unknown.name = "USB Gamepad";
@@ -356,6 +368,41 @@ void test_owned_routing_disconnect_and_haptic_stop() {
     zero_strength.rumble(true, 0xff01);
     require(center == 0 && gain == 0 && low == 0 && high == 0,
             "zero master strength produces no gain, centering or rumble through production output policy");
+  }
+  {
+    // Wheels with native condition effects (Moza and other direct-drive bases) get a proportional
+    // spring + damper instead of the driver's on/off autocenter.
+    int spring = -1, damper = -1;
+    bool spring_supported = true;
+    HapticOutput conditions_output = output;
+    conditions_output.conditions = [&](int s, int d) { spring = s; damper = d; return spring_supported && s > 0; };
+    auto moza_config = config;
+    moza_config.ffb.centering_spring = 0.15;
+    moza_config.ffb.damper = 0.10;
+    moza_config.ffb.strength = 0.5;
+    {
+      WheelInput moza(moza_config, true, conditions_output);
+      moza.prepare(true);
+      moza.rumble(true, 0);
+      require(spring == 15 && damper == 10 && gain == 50,
+              "spring/damper carry their own settings; master strength goes to the device gain only");
+      require(center == 0, "native spring replaces driver autocenter");
+      moza.prepare(false);
+      require(spring == 0 && damper == 0 && gain == 0, "focus loss stops spring and damper effects");
+      spring_supported = false;
+      moza.prepare(true);
+      moza.rumble(true, 0);
+      require(center == 8 && damper == 10, "no spring support falls back to scaled driver autocenter");
+      moza.stop();
+      require(spring == 0 && damper == 0 && center == 0, "explicit stop clears condition effects");
+    }
+    auto zero_moza = moza_config;
+    zero_moza.ffb.strength = 0.0;
+    spring_supported = true;
+    WheelInput zero_strength(zero_moza, true, conditions_output);
+    zero_strength.prepare(true);
+    zero_strength.rumble(true, 0);
+    require(spring == 0 && damper == 0 && center == 0 && gain == 0, "zero master strength runs no condition effect");
   }
   auxiliary.detach();
   wheel.prepare(true); // Before the periodic two-second scan, filtered snapshot is shorter.

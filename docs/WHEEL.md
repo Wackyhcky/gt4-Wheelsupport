@@ -6,8 +6,16 @@ configuration. Enable it deliberately and select or calibrate the intended devic
 
 ## Device selection and capture
 
-Automatic primary selection requires the SDL wheel type or a specific wheel/model name.
-A manufacturer ID, number of axes or generic HID classification alone does not identify a wheel.
+Automatic primary selection requires the SDL wheel type, a specific wheel/model name, or an exact
+wheelbase USB model (vendor + product ID). A manufacturer ID, number of axes or generic HID
+classification alone does not identify a wheel.
+
+Moza bases (USB vendor 0x346E, Gudsen) report names such as `MOZA R9 Base`, which match no wheel
+name. SDL 3.4 types R3/R5/R9/R12/R16/R21 product IDs 0x0000/0x0002/0x0004/0x0005/0x0006 as wheels; the
+same bases on newer firmware use 0x0010/0x0012/0x0014/0x0015/0x0016 (Linux `drivers/hid/hid-ids.h`,
+`USB_DEVICE_ID_MOZA_*`), which SDL does not type. Both sets are recognized by exact model. Moza pedals,
+shifters and handbrakes stay auxiliary devices. Earlier builds listed Moza as vendor 0x1209, which is the
+shared pid.codes vendor, not Moza.
 An unknown device can be selected explicitly. Standalone pedals and shifters can provide auxiliary
 bindings without becoming the primary wheel automatically.
 
@@ -71,15 +79,19 @@ enabled = false
 
 ## Feedback and current limits
 
-Feedback adapts the game's existing gamepad rumble to SDL haptic rumble/joystick rumble, with a
-fixed driver centering spring where supported. It does not implement the PS2 wheel force-feedback
+Feedback adapts the game's existing gamepad rumble to SDL haptic rumble/joystick rumble, plus a
+centering spring and damper. When the wheel exposes SDL `SDL_HAPTIC_SPRING`/`SDL_HAPTIC_DAMPER`
+condition effects (Moza, Fanatec and other direct-drive bases through DirectInput), the spring and
+damper run as proportional condition effects scaled by the master strength through the device gain.
+Otherwise the spring falls back to driver autocenter, which DirectInput exposes only as on/off at the
+driver's own strength, and the damper has no effect. It does not implement the PS2 wheel force-feedback
 protocol or derive steering torque from vehicle physics. Master strength zero produces no force.
 Focus loss, disconnect and shutdown stop autocenter, gain, effects and rumble. The test pulse is a
 deliberate, bounded launcher action for a connected selected device; an absent explicit device
 never redirects the test to another controller.
 
-Damper and feedback inversion remain reserved file fields without a native effect and have no
-active UI adjustment. The clutch is display-only: GT4's existing gamepad input has no manual-clutch
+Feedback inversion remains a reserved file field without a native effect and has no active UI
+adjustment. The clutch is display-only: GT4's existing gamepad input has no manual-clutch
 signal. H-pattern hardware can bind existing gamepad actions; direct gear selection is not added.
 
 Automated acceptance uses owned virtual SDL devices and a fake haptic command sink, plus parser,

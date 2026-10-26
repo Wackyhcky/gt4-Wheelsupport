@@ -59,10 +59,24 @@ pub fn is_wheel_vendor(vid: u16) -> bool {
         | 0x046D // Logitech
         | 0x044F // Thrustmaster
         | 0x0EB7 // Fanatec
-        | 0x1209 // Moza
+        | 0x346E // Moza (Gudsen)
         | 0x3416 // Cammus
         | 0x16D0 // SimuCube
     )
+}
+
+/// Exact wheelbase models identified by USB vendor + product ID (Moza, from Linux `hid-ids.h`).
+/// SDL 3.4 types only the first ID of each pair as a wheel; the second is the same base on newer firmware.
+pub fn is_known_wheelbase_model(vid: u16, pid: u16) -> bool {
+    vid == 0x346E
+        && matches!(
+            pid,
+            0x0000 | 0x0010 // R16 / R21
+            | 0x0002 | 0x0012 // R9
+            | 0x0004 | 0x0014 // R5
+            | 0x0005 | 0x0015 // R3
+            | 0x0006 | 0x0016 // R12
+        )
 }
 
 pub fn format_friendly_device_name(name: &str, guid: &str) -> String {
@@ -79,14 +93,18 @@ pub fn format_friendly_device_name(name: &str, guid: &str) -> String {
             return format!("Thrustmaster Wheel ({name})");
         } else if vid == 0x0EB7 {
             return format!("Fanatec Wheel ({name})");
+        } else if vid == 0x346E && !name.to_ascii_lowercase().contains("moza") {
+            return format!("Moza Wheel ({name})");
         }
     }
     name.to_string()
 }
 
 /// SDL wheel types and specific model names are candidates; generic HID/gamepads need explicit selection.
-pub fn is_candidate_wheel(sdl_is_wheel: bool, _sdl_is_gamepad: bool, name: &str, _guid: &str) -> bool {
+pub fn is_candidate_wheel(sdl_is_wheel: bool, _sdl_is_gamepad: bool, name: &str, guid: &str) -> bool {
     if sdl_is_wheel { return true; }
+    // A vendor alone does not establish wheel identity; an exact wheelbase model does.
+    if parse_guid_vid_pid(guid).is_some_and(|(vid, pid)| is_known_wheelbase_model(vid, pid)) { return true; }
     let lower = name.to_ascii_lowercase();
     if ["pedal", "shifter", "handbrake"].iter().any(|word| lower.contains(word)) { return false; }
     ["wheel", "driving force", "g29", "g920", "g923", "g27", "g25", "t150", "t248", "t300", "t500", "t-gt", "apex", "overdrive", "racing base", "wheelbase"]
@@ -296,6 +314,17 @@ mod tests {
         for invalid in ["", "12345678901234567890", "0000000é000000000000000000000000", "zz0000006d0400001dc2000000000000"] {
             assert_eq!(parse_guid_vid_pid(invalid), None);
         }
+    }
+
+    #[test]
+    fn moza_wheelbases_are_recognized_by_exact_model() {
+        let r9_new_firmware = "030000006e3400001200000000000000";
+        assert_eq!(parse_guid_vid_pid(r9_new_firmware), Some((0x346e, 0x0012)));
+        assert!(is_candidate_wheel(false, false, "MOZA R9 Base", r9_new_firmware));
+        assert_eq!(format_friendly_device_name("MOZA R9 Base", r9_new_firmware), "MOZA R9 Base");
+        assert!(!is_candidate_wheel(false, false, "MOZA SR-P Pedals", "030000006e3400000300000000000000"));
+        assert!(!is_candidate_wheel(false, false, "Pico device", "03000000091200000200000000000000"));
+        assert!(is_wheel_vendor(0x346e) && !is_wheel_vendor(0x1209));
     }
 
     #[test]

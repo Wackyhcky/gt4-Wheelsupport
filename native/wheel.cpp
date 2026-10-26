@@ -983,9 +983,26 @@ bool is_known_wheel_vendor(std::uint16_t vid) {
   case 0x046D: // Logitech
   case 0x044F: // Thrustmaster
   case 0x0EB7: // Fanatec
-  case 0x1209: // Moza
+  case 0x346E: // Moza (Gudsen)
   case 0x3416: // Cammus
   case 0x16D0: // SimuCube
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool is_known_wheelbase_model(std::uint16_t vid, std::uint16_t pid) {
+  if (vid != 0x346E)
+    return false;
+  // Moza wheelbases, from Linux drivers/hid/hid-ids.h (USB_DEVICE_ID_MOZA_*). SDL 3.4 types only the
+  // first ID of each pair as a wheel; the second is the same base on newer firmware.
+  switch (pid) {
+  case 0x0000: case 0x0010: // R16 / R21
+  case 0x0002: case 0x0012: // R9
+  case 0x0004: case 0x0014: // R5
+  case 0x0005: case 0x0015: // R3
+  case 0x0006: case 0x0016: // R12
     return true;
   default:
     return false;
@@ -995,8 +1012,11 @@ bool is_known_wheel_vendor(std::uint16_t vid) {
 bool is_candidate_wheel_device(bool sdl_is_wheel_type, bool sdl_is_gamepad,
                                std::string_view device_name, std::string_view guid) {
   (void)sdl_is_gamepad;
-  (void)guid; // A USB vendor alone does not establish wheel identity.
   if (sdl_is_wheel_type)
+    return true;
+  // A USB vendor alone does not establish wheel identity; an exact wheelbase model (vendor + product) does.
+  std::uint16_t vid = 0, pid = 0;
+  if (extract_guid_vid_pid(guid, vid, pid) && is_known_wheelbase_model(vid, pid))
     return true;
   const std::string lower = to_lower_ascii(device_name);
   for (std::string_view auxiliary : {"pedal", "shifter", "handbrake"})
@@ -1156,6 +1176,11 @@ WheelFfbCommand compute_ffb_command(const FfbConfig &config, std::uint16_t ps2_r
   cmd.gain_percent = static_cast<int>(std::lround(std::clamp(gain * 100.0, 0.0, 100.0)));
   cmd.autocenter_percent =
       static_cast<int>(std::lround(std::clamp(config.centering_spring * gain * 100.0, 0.0, 100.0)));
+  // Condition effects are already scaled by the device gain, so they carry only their own setting.
+  if (gain > 0.0) {
+    cmd.spring_percent = static_cast<int>(std::lround(std::clamp(config.centering_spring * 100.0, 0.0, 100.0)));
+    cmd.damper_percent = static_cast<int>(std::lround(std::clamp(config.damper * 100.0, 0.0, 100.0)));
+  }
 
   const auto base_motors = gt4::pad::rumble_motors(ps2_rumble);
   const int low_scaled =
@@ -1201,6 +1226,12 @@ void WheelInput::close_haptic() {
   stop();
   haptic_open_attempted_ = false;
   if (primary_haptic_) {
+    for (int *effect : {&spring_effect_, &damper_effect_}) {
+      if (*effect >= 0)
+        SDL_DestroyHapticEffect(primary_haptic_, *effect);
+      *effect = -1;
+    }
+    haptic_features_ = 0;
     if (rumble_initialized_) {
       SDL_StopHapticRumble(primary_haptic_);
       rumble_initialized_ = false;
@@ -1221,8 +1252,40 @@ void WheelInput::open_haptic_for_primary(SDL_Joystick *joystick) {
   // Opening a handle never enables force; focused rumble() resumes the configured outputs.
   SDL_SetHapticGain(primary_haptic_, 0);
   SDL_SetHapticAutocenter(primary_haptic_, 0);
+  haptic_features_ = SDL_GetHapticFeatures(primary_haptic_);
   if (SDL_InitHapticRumble(primary_haptic_))
     rumble_initialized_ = true;
+}
+
+bool WheelInput::run_condition_effect(std::uint16_t type, int &effect_id, int percent) {
+  if (!primary_haptic_ || (haptic_features_ & type) == 0)
+    return false;
+  if (percent <= 0) {
+    if (effect_id >= 0)
+      SDL_StopHapticEffect(primary_haptic_, effect_id);
+    return true;
+  }
+  // Proportional coefficient and saturation on the steering axis only. DirectInput autocenter is on/off
+  // at the driver's own strength, which on direct-drive bases (Moza, Fanatec DD) can be far too strong.
+  const auto coefficient = static_cast<Sint16>(std::lround(0x7FFF * (std::min(percent, 100) / 100.0)));
+  const auto saturation = static_cast<Uint16>(std::lround(0xFFFF * (std::min(percent, 100) / 100.0)));
+  SDL_HapticEffect effect{};
+  effect.condition.type = type;
+  effect.condition.direction.type = SDL_HAPTIC_CARTESIAN;
+  effect.condition.direction.dir[0] = 1;
+  effect.condition.length = SDL_HAPTIC_INFINITY;
+  effect.condition.right_sat[0] = saturation;
+  effect.condition.left_sat[0] = saturation;
+  effect.condition.right_coeff[0] = coefficient;
+  effect.condition.left_coeff[0] = coefficient;
+  if (effect_id < 0) {
+    effect_id = SDL_CreateHapticEffect(primary_haptic_, &effect);
+    if (effect_id < 0)
+      return false;
+  } else if (!SDL_UpdateHapticEffect(primary_haptic_, effect_id, &effect)) {
+    return false;
+  }
+  return SDL_RunHapticEffect(primary_haptic_, effect_id, 1);
 }
 
 void WheelInput::close_all_devices() {
@@ -1393,12 +1456,17 @@ void WheelInput::prepare(bool focused) {
 
 HapticOutput WheelInput::haptic_output() {
   if (output_override_.gain || output_override_.autocenter || output_override_.stop_all ||
-      output_override_.stop_rumble || output_override_.rumble || output_override_.joystick_rumble)
+      output_override_.stop_rumble || output_override_.rumble || output_override_.joystick_rumble ||
+      output_override_.conditions)
     return output_override_;
   HapticOutput output;
   output.gain = [this](int value) { if (primary_haptic_) SDL_SetHapticGain(primary_haptic_, value); };
   output.autocenter = [this](int value) { if (primary_haptic_) SDL_SetHapticAutocenter(primary_haptic_, value); };
   output.stop_all = [this] { if (primary_haptic_) SDL_StopHapticEffects(primary_haptic_); };
+  output.conditions = [this](int spring, int damper) {
+    run_condition_effect(SDL_HAPTIC_DAMPER, damper_effect_, damper);
+    return run_condition_effect(SDL_HAPTIC_SPRING, spring_effect_, spring) && spring > 0;
+  };
   output.stop_rumble = [this] { if (primary_haptic_ && rumble_initialized_) SDL_StopHapticRumble(primary_haptic_); };
   output.rumble = [this](float value) { if (primary_haptic_ && rumble_initialized_) SDL_PlayHapticRumble(primary_haptic_, value, 500); };
   output.joystick_rumble = [this](std::uint16_t low, std::uint16_t high) {
@@ -1409,6 +1477,7 @@ HapticOutput WheelInput::haptic_output() {
 }
 
 void stop_haptic_output(const HapticOutput &output) {
+  if (output.conditions) output.conditions(0, 0);
   if (output.autocenter) output.autocenter(0);
   if (output.stop_all) output.stop_all();
   if (output.stop_rumble) output.stop_rumble();
@@ -1426,7 +1495,10 @@ void WheelInput::rumble(bool focused, std::uint16_t ps2_rumble) {
   const WheelFfbCommand command = compute_ffb_command(config_.ffb, ps2_rumble);
   if (haptic_suspended_) {
     if (output.gain) output.gain(command.gain_percent);
-    if (output.autocenter) output.autocenter(command.autocenter_percent);
+    // Prefer a proportional spring effect; fall back to driver autocenter when the wheel has none.
+    const bool native_spring =
+        output.conditions && output.conditions(command.spring_percent, command.damper_percent);
+    if (output.autocenter) output.autocenter(native_spring ? 0 : command.autocenter_percent);
     haptic_suspended_ = false;
   }
   if (ps2_rumble == last_rumble_raw_ && (ps2_rumble == 0 || now_ms - last_rumble_ms_ < 250)) return;
